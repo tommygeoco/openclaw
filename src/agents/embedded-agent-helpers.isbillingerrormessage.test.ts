@@ -32,6 +32,8 @@ const ANTHROPIC_OVERLOADED_PAYLOAD =
   '{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"},"request_id":"req_test"}';
 // OpenRouter 402 billing example: https://openrouter.ai/docs/api-reference/errors
 const OPENROUTER_CREDITS_MESSAGE = "Payment Required: insufficient credits";
+const OPENAI_CURRENT_QUOTA_MESSAGE =
+  "You exceeded your current quota, please check your plan and billing details.";
 // Issue-backed Anthropic/OpenAI-compatible insufficient_quota payload under HTTP 400:
 // https://github.com/openclaw/openclaw/issues/23440
 const INSUFFICIENT_QUOTA_PAYLOAD =
@@ -142,6 +144,7 @@ describe("isBillingErrorMessage", () => {
         "Payment Required",
         "HTTP 402 Payment Required",
         "plans & billing",
+        OPENAI_CURRENT_QUOTA_MESSAGE,
         "Insufficient USD or Diem balance to complete request. Visit https://venice.ai/settings/api to add credits.",
         "This model requires more credits to use",
         "This endpoint require more credits",
@@ -1196,6 +1199,7 @@ describe("classifyFailoverReason provider messages", () => {
     expect(classifyFailoverReason("402 items found in the database")).toBeNull();
     expect(classifyFailoverReason("402 room is available")).toBeNull();
     expect(classifyFailoverReason(INSUFFICIENT_QUOTA_PAYLOAD)).toBe("billing");
+    expect(classifyFailoverReason(OPENAI_CURRENT_QUOTA_MESSAGE)).toBe("billing");
     expect(classifyFailoverReason("deadline exceeded")).toBe("timeout");
     expect(classifyFailoverReason("request ended without sending any chunks")).toBe("timeout");
     expect(classifyFailoverReason("Connection error.")).toBe("timeout");

@@ -73,7 +73,6 @@ const ERROR_PATTERNS = {
     /too many (?:concurrent )?requests/i,
     /throttling(?:exception)?/i,
     "model_cooldown",
-    "exceeded your current quota",
     "resource has been exhausted",
     "quota exceeded",
     "resource_exhausted",
@@ -191,6 +190,9 @@ const ERROR_PATTERNS = {
     /used\s+all\s+available\s+credits/i,
     /(?:monthly\s+)?spend(?:ing)?\s+limit/i,
     /insufficient[_ ]quota/i,
+    // OpenAI-style "You exceeded your current quota, please check your plan
+    // and billing details." is an account-funds error, not a rate limit.
+    "exceeded your current quota",
     "credit balance",
     "plans & billing",
     /insufficient[_ ]balance/i,

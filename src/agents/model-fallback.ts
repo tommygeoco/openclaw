@@ -1243,15 +1243,19 @@ export async function runWithModelFallback<T>(
     !params.skipAuthProfileRuntime && params.cfg && hasAnyAuthProfileStoreSource(params.agentDir)
       ? await loadModelFallbackAuthRuntime()
       : null;
-  const authStore = authRuntime
+  const externalCliDiscovery = authRuntime
+    ? externalCliDiscoveryForProviders({
+        cfg: params.cfg,
+        providers: candidates.map((candidate) => candidate.provider),
+      })
+    : undefined;
+  let authStore = authRuntime
     ? authRuntime.ensureAuthProfileStore(params.agentDir, {
-        externalCli: externalCliDiscoveryForProviders({
-          cfg: params.cfg,
-          providers: candidates.map((candidate) => candidate.provider),
-        }),
+        externalCli: externalCliDiscovery,
       })
     : null;
   const attempts: FallbackAttempt[] = [];
+  const blockedProviderReasons = new Map<string, FailoverReason>();
   let lastError: unknown;
   const cooldownProbeUsedProviders = new Set<string>();
   const observeDecision = async (decision: ModelFallbackDecisionParams) => {
@@ -1281,6 +1285,43 @@ export async function runWithModelFallback<T>(
 
   for (let i = 0; i < candidates.length; i += 1) {
     const candidate = candidates[i];
+    const isPrimary = i === 0;
+    const requestedModel = requestedCandidate
+      ? sameModelCandidate(candidate, requestedCandidate)
+      : false;
+
+    // A provider that failed with auth/billing earlier in this run cannot
+    // serve later candidates either — skip same-provider fallbacks instead of
+    // burning latency on the same broken credentials.
+    const blockedReason = blockedProviderReasons.get(candidate.provider);
+    if (blockedReason) {
+      const error = `Provider ${candidate.provider} unavailable after prior ${blockedReason} failure`;
+      attempts.push({
+        provider: candidate.provider,
+        model: candidate.model,
+        error,
+        reason: blockedReason,
+      });
+      await observeDecision({
+        decision: "skip_candidate",
+        runId: params.runId,
+        sessionId: params.sessionId,
+        lane: params.lane,
+        requestedProvider: params.provider,
+        requestedModel: params.model,
+        candidate,
+        attempt: i + 1,
+        total: candidates.length,
+        reason: blockedReason,
+        error,
+        nextCandidate: candidates[i + 1],
+        isPrimary,
+        requestedModelMatched: requestedModel,
+        fallbackConfigured: hasFallbackCandidates,
+      });
+      continue;
+    }
+
     const candidateHarnessAuth = await resolveModelFallbackCandidateHarnessAuthPrecheck({
       cfg: params.cfg,
       agentId: params.agentId,
@@ -1289,10 +1330,6 @@ export async function runWithModelFallback<T>(
       prepareAgentHarnessRuntime: params.prepareAgentHarnessRuntime,
       ...candidate,
     });
-    const isPrimary = i === 0;
-    const requestedModel = requestedCandidate
-      ? sameModelCandidate(candidate, requestedCandidate)
-      : false;
 
     // Skip-known-bad cache: when a previous turn in this session failed this
     // candidate with `auth` / `auth_permanent` (e.g. missing or expired
@@ -1349,13 +1386,24 @@ export async function runWithModelFallback<T>(
     let attemptedDuringCooldown = false;
     let transientProbeProviderForAttempt: string | null = null;
     if (authRuntime && authStore && !candidateHarnessAuth.skipsProviderAuthCooldown) {
+      // The embedded runner can mark a provider profile unavailable during the
+      // previous attempt (for example billing/auth). Reload before evaluating
+      // the next candidate so same-provider fallbacks see the updated state.
+      if (i > 0) {
+        authStore = authRuntime.ensureAuthProfileStore(params.agentDir, {
+          externalCli: externalCliDiscovery,
+        });
+      }
+      // Non-null binding so closures below keep the narrowed type.
+      const candidateAuthStore = authStore;
       const profileIds = authRuntime.resolveAuthProfileOrder({
         cfg: params.cfg,
-        store: authStore,
+        store: candidateAuthStore,
         provider: candidate.provider,
       });
       const isAnyProfileAvailable = profileIds.some(
-        (id) => !authRuntime.isProfileInCooldown(authStore, id, undefined, candidate.model),
+        (id) =>
+          !authRuntime.isProfileInCooldown(candidateAuthStore, id, undefined, candidate.model),
       );
 
       if (profileIds.length > 0 && !isAnyProfileAvailable) {
@@ -1370,7 +1418,7 @@ export async function runWithModelFallback<T>(
           now,
           probeThrottleKey,
           authRuntime,
-          authStore,
+          authStore: candidateAuthStore,
           profileIds,
         });
 
@@ -1655,6 +1703,14 @@ export async function runWithModelFallback<T>(
           model: candidate.model,
           reason: normalized.reason,
         });
+      }
+
+      // Billing failures are provider-wide: every remaining candidate on the
+      // same provider would fail the same way, so block them for the rest of
+      // this run. Auth failures stay per-candidate — other models on the same
+      // provider may resolve different auth profiles/harness runtimes.
+      if (isKnownFailover && normalized.reason === "billing") {
+        blockedProviderReasons.set(candidate.provider, normalized.reason);
       }
 
       lastError = isKnownFailover ? normalized : err;

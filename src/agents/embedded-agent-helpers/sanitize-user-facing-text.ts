@@ -108,6 +108,11 @@ function extractProviderRateLimitMessage(raw: string): string | undefined {
 }
 
 export function formatRateLimitOrOverloadedErrorCopy(raw: string): string | undefined {
+  // Billing errors can contain rate-limit-ish phrasing (quota, limits); never
+  // soften them into "try again in a moment" copy.
+  if (isBillingErrorMessage(raw)) {
+    return undefined;
+  }
   if (isRateLimitErrorMessage(raw)) {
     return extractProviderRateLimitMessage(raw) ?? RATE_LIMIT_ERROR_USER_MESSAGE;
   }
