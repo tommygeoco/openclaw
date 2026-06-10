@@ -4,7 +4,6 @@ const ERROR_PATTERNS = {
   rateLimit: [
     /rate[_ ]limit|too many requests|429/,
     "model_cooldown",
-    "exceeded your current quota",
     "resource has been exhausted",
     "quota exceeded",
     "resource_exhausted",
@@ -45,6 +44,7 @@ const ERROR_PATTERNS = {
     "payment required",
     "insufficient credits",
     /insufficient[_ ]quota/i,
+    "exceeded your current quota",
     "credit balance",
     "plans & billing",
     "insufficient balance",

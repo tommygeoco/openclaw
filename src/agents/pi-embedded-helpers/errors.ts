@@ -43,6 +43,9 @@ const OVERLOADED_ERROR_USER_MESSAGE =
   "The AI service is temporarily overloaded. Please try again in a moment.";
 
 function formatRateLimitOrOverloadedErrorCopy(raw: string): string | undefined {
+  if (isBillingErrorMessage(raw)) {
+    return undefined;
+  }
   if (isRateLimitErrorMessage(raw)) {
     return RATE_LIMIT_ERROR_USER_MESSAGE;
   }

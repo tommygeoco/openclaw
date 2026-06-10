@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import type { SessionEntry } from "../../config/sessions.js";
 import * as sessions from "../../config/sessions.js";
 import type { TypingMode } from "../../config/types.js";
+import { defaultRuntime } from "../../runtime.js";
 import { withStateDirEnv } from "../../test-helpers/state-dir-env.js";
 import type { TemplateContext } from "../templating.js";
 import type { GetReplyOptions } from "../types.js";
@@ -702,10 +703,10 @@ describe("runReplyAgent typing (heartbeat)", () => {
     });
   });
 
-  it("announces model fallback only when verbose mode is enabled", async () => {
+  it("announces model fallback on transition regardless of verbose mode", async () => {
     const cases = [
-      { name: "verbose on", verbose: "on" as const, expectNotice: true },
-      { name: "verbose off", verbose: "off" as const, expectNotice: false },
+      { name: "verbose on", verbose: "on" as const },
+      { name: "verbose off", verbose: "off" as const },
     ] as const;
     for (const testCase of cases) {
       const sessionEntry: SessionEntry = {
@@ -739,6 +740,7 @@ describe("runReplyAgent typing (heartbeat)", () => {
         sessionStore,
         sessionKey: "main",
       });
+      const errorSpy = vi.spyOn(defaultRuntime, "error").mockImplementation(() => undefined);
       const phases: string[] = [];
       const off = onAgentEvent((evt) => {
         const phase = typeof evt.data?.phase === "string" ? evt.data.phase : null;
@@ -746,22 +748,26 @@ describe("runReplyAgent typing (heartbeat)", () => {
           phases.push(phase);
         }
       });
-      const res = await run();
-      off();
-      const payload = Array.isArray(res)
-        ? (res[0] as { text?: string })
-        : (res as { text?: string });
-      if (testCase.expectNotice) {
+      try {
+        const res = await run();
+        off();
+        const payload = Array.isArray(res)
+          ? (res[0] as { text?: string })
+          : (res as { text?: string });
         expect(payload.text, testCase.name).toContain("Model Fallback:");
         expect(payload.text, testCase.name).toContain("deepinfra/moonshotai/Kimi-K2.5");
         expect(sessionEntry.fallbackNoticeReason, testCase.name).toBe("rate limit");
-        continue;
+        expect(errorSpy, testCase.name).toHaveBeenCalledWith(
+          expect.stringContaining("Model Fallback:"),
+        );
+        expect(
+          phases.filter((phase) => phase === "fallback"),
+          testCase.name,
+        ).toHaveLength(1);
+      } finally {
+        off();
+        errorSpy.mockRestore();
       }
-      expect(payload.text, testCase.name).not.toContain("Model Fallback:");
-      expect(
-        phases.filter((phase) => phase === "fallback"),
-        testCase.name,
-      ).toHaveLength(1);
     }
   });
 
@@ -970,7 +976,7 @@ describe("runReplyAgent typing (heartbeat)", () => {
     }
   });
 
-  it("emits fallback lifecycle events while verbose is off", async () => {
+  it("emits fallback lifecycle events and warning payloads while verbose is off", async () => {
     const sessionEntry: SessionEntry = {
       sessionId: "session",
       updatedAt: Date.now(),
@@ -1038,7 +1044,7 @@ describe("runReplyAgent typing (heartbeat)", () => {
 
       const firstText = Array.isArray(first) ? first[0]?.text : first?.text;
       const secondText = Array.isArray(second) ? second[0]?.text : second?.text;
-      expect(firstText).not.toContain("Model Fallback:");
+      expect(firstText).toContain("Model Fallback:");
       expect(secondText).not.toContain("Model Fallback cleared:");
       expect(phases.filter((phase) => phase === "fallback")).toHaveLength(1);
       expect(phases.filter((phase) => phase === "fallback_cleared")).toHaveLength(1);

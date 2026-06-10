@@ -71,7 +71,7 @@ export function buildFallbackNotice(params: {
     return null;
   }
   const reasonSummary = buildFallbackReasonSummary(params.attempts);
-  return `↪️ Model Fallback: ${active} (selected ${selected}; ${reasonSummary})`;
+  return `⚠️ Model Fallback: ${active} (selected ${selected}; ${reasonSummary})`;
 }
 
 export function buildFallbackClearedNotice(params: {

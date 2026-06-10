@@ -423,6 +423,18 @@ export async function runReplyAgent(params: {
       attempts: fallbackAttempts,
       state: fallbackStateEntry,
     });
+    const fallbackTransitionNoticeText = fallbackTransition.fallbackTransitioned
+      ? buildFallbackNotice({
+          selectedProvider,
+          selectedModel,
+          activeProvider: providerUsed,
+          activeModel: modelUsed,
+          attempts: fallbackAttempts,
+        })
+      : null;
+    const fallbackTransitionNotice = fallbackTransitionNoticeText
+      ? ({ text: fallbackTransitionNoticeText } satisfies ReplyPayload)
+      : undefined;
     if (fallbackTransition.stateChanged) {
       if (fallbackStateEntry) {
         fallbackStateEntry.fallbackNoticeSelectedModel = fallbackTransition.nextState.selectedModel;
@@ -472,7 +484,7 @@ export async function runReplyAgent(params: {
     // Otherwise, a late typing trigger (e.g. from a tool callback) can outlive the run and
     // keep the typing indicator stuck.
     if (payloadArray.length === 0) {
-      return finalizeWithFollowup(undefined, queueKey, runFollowupTurn);
+      return finalizeWithFollowup(fallbackTransitionNotice, queueKey, runFollowupTurn);
     }
 
     const payloadResult = buildReplyPayloads({
@@ -500,7 +512,7 @@ export async function runReplyAgent(params: {
     didLogHeartbeatStrip = payloadResult.didLogHeartbeatStrip;
 
     if (replyPayloads.length === 0) {
-      return finalizeWithFollowup(undefined, queueKey, runFollowupTurn);
+      return finalizeWithFollowup(fallbackTransitionNotice, queueKey, runFollowupTurn);
     }
 
     const successfulCronAdds = runResult.successfulCronAdds ?? 0;
@@ -600,6 +612,9 @@ export async function runReplyAgent(params: {
     }
 
     if (fallbackTransition.fallbackTransitioned) {
+      if (fallbackTransitionNoticeText) {
+        defaultRuntime.error(fallbackTransitionNoticeText);
+      }
       emitAgentEvent({
         runId,
         sessionKey,
@@ -615,17 +630,8 @@ export async function runReplyAgent(params: {
           attempts: fallbackAttempts,
         },
       });
-      if (verboseEnabled) {
-        const fallbackNotice = buildFallbackNotice({
-          selectedProvider,
-          selectedModel,
-          activeProvider: providerUsed,
-          activeModel: modelUsed,
-          attempts: fallbackAttempts,
-        });
-        if (fallbackNotice) {
-          verboseNotices.push({ text: fallbackNotice });
-        }
+      if (fallbackTransitionNotice) {
+        finalPayloads = [fallbackTransitionNotice, ...finalPayloads];
       }
     }
     if (fallbackTransition.fallbackCleared) {

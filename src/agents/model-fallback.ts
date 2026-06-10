@@ -464,18 +464,33 @@ export async function runWithModelFallback<T>(params: {
     model: params.model,
     fallbacksOverride: params.fallbacksOverride,
   });
-  const authStore = params.cfg
+  let authStore = params.cfg
     ? ensureAuthProfileStore(params.agentDir, { allowKeychainPrompt: false })
     : null;
   const attempts: FallbackAttempt[] = [];
+  const blockedProviderReasons = new Map<string, FailoverReason>();
   let lastError: unknown;
 
   const hasFallbackCandidates = candidates.length > 1;
 
   for (let i = 0; i < candidates.length; i += 1) {
     const candidate = candidates[i];
+    const blockedReason = blockedProviderReasons.get(candidate.provider);
+    if (blockedReason) {
+      attempts.push({
+        provider: candidate.provider,
+        model: candidate.model,
+        error: `Provider ${candidate.provider} unavailable after prior ${blockedReason} failure`,
+        reason: blockedReason,
+      });
+      continue;
+    }
     let runOptions: ModelFallbackRunOptions | undefined;
     if (authStore) {
+      // The embedded runner can mark a provider profile unavailable during the
+      // previous attempt (for example billing/auth). Reload before evaluating
+      // the next candidate so same-provider fallbacks see the updated state.
+      authStore = ensureAuthProfileStore(params.agentDir, { allowKeychainPrompt: false });
       const profileIds = resolveAuthProfileOrder({
         cfg: params.cfg,
         store: authStore,
@@ -563,6 +578,13 @@ export async function runWithModelFallback<T>(params: {
         status: described.status,
         code: described.code,
       });
+      if (
+        described.reason === "auth" ||
+        described.reason === "auth_permanent" ||
+        described.reason === "billing"
+      ) {
+        blockedProviderReasons.set(candidate.provider, described.reason);
+      }
       await params.onError?.({
         provider: candidate.provider,
         model: candidate.model,

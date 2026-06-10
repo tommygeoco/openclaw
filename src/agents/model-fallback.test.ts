@@ -183,6 +183,8 @@ const ANTHROPIC_OVERLOADED_PAYLOAD =
 // https://github.com/openclaw/openclaw/issues/23440
 const INSUFFICIENT_QUOTA_PAYLOAD =
   '{"type":"error","error":{"type":"insufficient_quota","message":"Your account has insufficient quota balance to run this request."}}';
+const OPENAI_CURRENT_QUOTA_MESSAGE =
+  "You exceeded your current quota, please check your plan and billing details.";
 // Internal OpenClaw compatibility marker, not a provider API contract.
 const MODEL_COOLDOWN_MESSAGE = "model_cooldown: All credentials for model gpt-5 are cooling down";
 // SDK/transport compatibility marker, not a provider API contract.
@@ -422,6 +424,25 @@ describe("runWithModelFallback", () => {
     expect(result.attempts[0]?.reason).toBe("billing");
   });
 
+  it("records OpenAI current quota errors as billing during fallback", async () => {
+    const cfg = makeCfg();
+    const run = vi
+      .fn()
+      .mockRejectedValueOnce(new Error(OPENAI_CURRENT_QUOTA_MESSAGE))
+      .mockResolvedValueOnce("ok");
+
+    const result = await runWithModelFallback({
+      cfg,
+      provider: "openai",
+      model: "gpt-4.1-mini",
+      run,
+    });
+
+    expect(result.result).toBe("ok");
+    expect(result.attempts).toHaveLength(1);
+    expect(result.attempts[0]?.reason).toBe("billing");
+  });
+
   it("falls back to configured primary for override credential validation errors", async () => {
     const cfg = makeCfg();
     const run = createOverrideFailureRun({
@@ -613,10 +634,7 @@ describe("runWithModelFallback", () => {
       }),
     ).rejects.toThrow("All models failed");
 
-    expect(run.mock.calls).toEqual([
-      ["anthropic", "claude-opus-4-5"],
-      ["anthropic", "claude-haiku-3-5"],
-    ]);
+    expect(run.mock.calls).toEqual([["anthropic", "claude-opus-4-5"]]);
   });
 
   it("uses fallbacksOverride instead of agents.defaults.model.fallbacks", async () => {
@@ -1175,6 +1193,114 @@ describe("runWithModelFallback", () => {
       expect(result.result).toBe("groq success");
       expect(run).toHaveBeenCalledTimes(1);
       expect(run).toHaveBeenNthCalledWith(1, "groq", "llama-3.3-70b-versatile");
+    });
+
+    it("refreshes provider cooldown state between same-provider candidates", async () => {
+      const provider = `openai-codex-refresh-${crypto.randomUUID()}`;
+      const profileId = `${provider}:default`;
+      const initialStore: AuthProfileStore = {
+        version: AUTH_STORE_VERSION,
+        profiles: {
+          [profileId]: { type: "api_key", provider, key: "test-key" },
+        },
+      };
+      const cfg = makeCfg({
+        agents: {
+          defaults: {
+            model: {
+              primary: `${provider}/gpt-5.4`,
+              fallbacks: [`${provider}/gpt-5.3-codex`, "groq/llama-3.3-70b-versatile"],
+            },
+          },
+        },
+      });
+
+      await withTempAuthStore(initialStore, async (dir) => {
+        const run = vi.fn().mockImplementation(async (providerId: string, modelId: string) => {
+          if (providerId === provider && modelId === "gpt-5.4") {
+            saveAuthProfileStore(
+              {
+                ...initialStore,
+                usageStats: {
+                  [profileId]: {
+                    disabledUntil: Date.now() + 300000,
+                    disabledReason: "billing",
+                  },
+                },
+              },
+              dir,
+            );
+            throw new Error(OPENAI_CURRENT_QUOTA_MESSAGE);
+          }
+          if (providerId === "groq" && modelId === "llama-3.3-70b-versatile") {
+            return "groq success";
+          }
+          throw new Error(`unexpected fallback candidate: ${providerId}/${modelId}`);
+        });
+
+        const result = await runWithModelFallback({
+          cfg,
+          provider,
+          model: "gpt-5.4",
+          run,
+          agentDir: dir,
+        });
+
+        expect(result.result).toBe("groq success");
+        expect(run.mock.calls).toEqual([
+          [provider, "gpt-5.4"],
+          ["groq", "llama-3.3-70b-versatile"],
+        ]);
+        expect(result.attempts[0]?.reason).toBe("billing");
+        expect(result.attempts[1]).toMatchObject({
+          provider,
+          model: "gpt-5.3-codex",
+          reason: "billing",
+        });
+      });
+    });
+
+    it("skips same-provider models after a billing failure even before cooldown state persists", async () => {
+      const provider = `openai-codex-billing-${crypto.randomUUID()}`;
+      const cfg = makeCfg({
+        agents: {
+          defaults: {
+            model: {
+              primary: `${provider}/gpt-5.4`,
+              fallbacks: [`${provider}/gpt-5.3-codex`, "groq/llama-3.3-70b-versatile"],
+            },
+          },
+        },
+      });
+
+      const run = vi.fn().mockImplementation(async (providerId: string, modelId: string) => {
+        if (providerId === provider && modelId === "gpt-5.4") {
+          throw new Error(OPENAI_CURRENT_QUOTA_MESSAGE);
+        }
+        if (providerId === "groq" && modelId === "llama-3.3-70b-versatile") {
+          return "groq success";
+        }
+        throw new Error(`unexpected fallback candidate: ${providerId}/${modelId}`);
+      });
+
+      const result = await runWithModelFallback({
+        cfg,
+        provider,
+        model: "gpt-5.4",
+        run,
+      });
+
+      expect(result.result).toBe("groq success");
+      expect(run.mock.calls).toEqual([
+        [provider, "gpt-5.4"],
+        ["groq", "llama-3.3-70b-versatile"],
+      ]);
+      expect(result.attempts[0]?.reason).toBe("billing");
+      expect(result.attempts[1]).toMatchObject({
+        provider,
+        model: "gpt-5.3-codex",
+        reason: "billing",
+      });
     });
 
     it("tries cross-provider fallbacks when same provider has rate limit", async () => {
